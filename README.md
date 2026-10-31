@@ -6,7 +6,7 @@ Independent, high-performance algorithms and certified exhaustive search for hig
 
 Construct a **substantially faster, independently verifiable** proof of the optimal 4×4 Boggle board using the ENABLE2K dictionary. Dan Vanderkam established that `perslatgsineters` scores **3,625** and is globally optimal. We seek a new proof algorithm, not another claim to have discovered this board. A later goal is to extend the approach to unresolved word lists and 5×5 boards.
 
-**Current status:** foundation only. The code scores complete boards exactly and includes a simple certified upper-bound baseline, but **does not yet prove global optimality**.
+**Current status:** an exact scorer, the inventory baseline, and a tested **compiled fragment-table upper bound**, with optional shared-cell synchronization. The new bound checks every short fragment of a word, counts each word once, and is no weaker than the inventory baseline. This is a screening stage, **not yet a global optimality proof or a demonstrated speedup over Vanderkam's prover**.
 
 ## Build
 
@@ -16,7 +16,7 @@ Requires a C++17 compiler, Make, and Python 3 for tests.
 make
 make test
 ./boggle-optimal score /path/to/enable2k.txt perslatgsineters
-./boggle-optimal bound /path/to/enable2k.txt perslatgsinet....
+./boggle-optimal bound /path/to/enable2k.txt --method patterns --window 5 perslatgsinet....
 ./boggle-optimal bench /path/to/enable2k.txt perslatgsineters
 ```
 
@@ -24,11 +24,34 @@ Use the [ENABLE2K file from Vanderkam's repository](https://github.com/danvk/hyb
 
 Boards are lowercase row-major strings. `q` represents a `Qu` tile; word lengths for scoring count the full written `qu`. Words score 1 (3–4 letters), 2 (5), 3 (6), 5 (7), and 11 (8+); words are counted once per board irrespective of number of paths. All tiles in a word path are distinct and consecutive cells are king-move adjacent. The command supports `--rows N --cols M` (default 4×4). A partial board uses `.` for each unfilled cell.
 
+### Stronger bounds
+
+The pattern index is compiled once and reused for a batch of partial boards.
+Windows of 2 through 6 tiles are supported; longer windows yield tighter bounds
+but require more memory. The five-tile direct index is about 57 MiB before sparse
+postings; the six-tile index is about 1.5 GiB. Tables are immutable and shareable;
+each worker needs only its own scratch workspace.
+
+```sh
+python3 tools/fetch_enable2k.py
+python3 tools/benchmark_bounds.py data/enable2k.txt --windows 4 5 6 --expect-score 3625
+```
+
+Add `--force` to synchronize one unfilled cell across every word in a single
+26-way mask computation; see [the stronger bound](docs/synchronized-bound.md).
+
+See [bound construction and proof](docs/pattern-bound.md) and
+[benchmark methodology](benchmarks/README.md). The default method remains
+`inventory`; request `--method patterns` explicitly. Pattern bounds currently
+support grids of at most 16 cells, while exact scoring and inventory bounds
+support up to 25. A long all-wildcard path makes the fragment filter ineffective;
+the implementation detects this and falls back to compact inventory checks.
+
 ### Validation
 
-`make test` compares the scorer against a separate Python path-finding implementation on **all 15,625** 2×3 boards over five test symbols. It also checks the validity of the baseline partial-board bound on exhaustive completions of 250 random partial boards. These tests exercise lowercase input, Qu, duplicate dictionary entries, distinct-word scoring, and path constraints. They do **not** replace a full 4×4 certificate.
+`make test` compares the scorer against a separate Python path-finding implementation on **all 15,625** 2×3 boards over five test symbols. It also checks the validity of the baseline partial-board bound on exhaustive completions of 250 random partial boards. The new bound is additionally checked on **all 4,096 partial 2×3 boards** over a three-symbol alphabet plus wildcard, at five window lengths, against exact completion maxima. Tests cover monotonicity, symmetry, Qu, absent symbols, duplicate paths, separate workspaces and generation wraparound. They do **not** replace a full 4×4 certificate.
 
-`bench` reports the throughput of 10,000 exact repeated score operations; use a larger, varied batch in future performance comparisons. No performance claim is made yet.
+`bench` reports JSON timings for exact scoring. `bench-bound` separately reports bound construction and batch evaluation time, checksums, memory sizes and pruning counts. No end-to-end proof-speed claim is made.
 
 ## Algorithms and references
 
