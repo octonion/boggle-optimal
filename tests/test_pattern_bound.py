@@ -46,6 +46,9 @@ def main():
 
         previous = dict(zip(patterns, run('bound', patterns, '--method', 'inventory')))
         improved = 0
+        forced_previous = previous
+        synchronized_improvements = 0
+        degrees = [3, 5, 3, 3, 5, 3]
         for window in range(2, 7):
             bounds = dict(zip(patterns, run('bound', patterns, '--method', 'patterns', '--window', str(window))))
             for pattern, bound in bounds.items():
@@ -60,8 +63,23 @@ def main():
                 horizontal = pattern[:3][::-1] + pattern[3:][::-1]
                 vertical = pattern[3:] + pattern[:3]
                 assert bounds[horizontal] == bounds[vertical] == bound
+            forced = dict(zip(patterns, run('bound', patterns, '--method', 'patterns', '--window', str(window), '--force')))
+            for pattern, value in forced.items():
+                assert maximum(pattern) <= value <= bounds[pattern], (window, pattern, value)
+                assert value <= forced_previous[pattern], (window, pattern, value, forced_previous[pattern])
+                synchronized_improvements += value < bounds[pattern]
+                for i, cell in enumerate(pattern):
+                    if cell == '.':
+                        for letter in 'abq':
+                            child = pattern[:i] + letter + pattern[i + 1:]
+                            assert forced[child] <= value, (window, pattern, child)
+                if pattern.count('.') >= 2 or ('.' in pattern and window == 6):
+                    chosen = max((i for i in range(6) if pattern[i] == '.'), key=lambda i: (degrees[i], -i))
+                    expected = max(bounds[pattern[:chosen] + c + pattern[chosen + 1:]] for c in 'abq')
+                    assert value == expected, (window, pattern, value, expected)
+            forced_previous = forced
             previous = bounds
-        assert improved > 0
+        assert improved > 0 and synchronized_improvements > 0
         # A letter absent from the dictionary alphabet must invalidate paths
         # containing it, not act as a wildcard or alias another letter.
         unknown = ['z.....', 'zzzzzz', 'abz...', 'zqb...']
@@ -71,13 +89,14 @@ def main():
                 assert reference.reference(''.join(completion), 2, 3) <= bound
         invalid = [('--window', '7'), ('--window', '-1'), ('--window', '3x'),
                    ('--rows', '2147483647'), ('--cols', '0'), ('--table-mib', '0'),
-                   ('--method', 'missing'), ('--repeat', '0')]
+                   ('--method', 'missing'), ('--repeat', '0'), ('--force-cell', '16'), ('--force-cell', '8')]
         for options in invalid:
             result = subprocess.run([BIN, 'bound', str(dictionary), '--rows', '2', '--cols', '3',
                                      '--method', 'patterns', *options, '......'], capture_output=True)
             assert result.returncode != 0, options
     print(f'PASS: {len(boards)} independent scores; {len(patterns)} partial boards x 5 window lengths; '
-          f'{improved} strict bound improvements; all completions, monotonicity, symmetries and invalid input')
+          f'{improved} fragment and {synchronized_improvements} synchronized improvements; '
+          'all completions, simultaneous forcing, monotonicity, symmetries and invalid input')
 
 
 if __name__ == '__main__':

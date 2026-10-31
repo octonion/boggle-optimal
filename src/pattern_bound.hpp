@@ -11,6 +11,8 @@ class PatternBound {
     struct Path { std::array<uint8_t, 6> cells{}; uint8_t length = 0; };
     int cells_, base_, length_;
     std::array<int, 26> digits_{};
+    std::array<uint8_t, 16> degree_{};
+    std::vector<std::array<uint8_t, 6>> symbols_;
     std::array<uint32_t, 7> power_{}, start_{};
     std::vector<uint32_t> offsets_, matches_, requirements_;
     std::vector<Word> words_;
@@ -21,9 +23,9 @@ class PatternBound {
     uint64_t total_points_ = 0;
 public:
     struct Workspace {
-        std::vector<uint32_t> possible, seen_keys;
+        std::vector<uint32_t> possible, seen_keys, support;
         uint32_t generation = 0;
-        size_t bytes() const { return (possible.size() + seen_keys.size()) * sizeof(uint32_t); }
+        size_t bytes() const { return (possible.size() + seen_keys.size() + support.size()) * sizeof(uint32_t); }
     };
 private:
 
@@ -38,9 +40,9 @@ private:
         out.erase(std::unique(out.begin(), out.end()), out.end());
         return out;
     }
-    std::vector<uint32_t> patterns(const std::string& gram) const {
+    std::vector<std::pair<uint32_t, uint32_t>> patterns(const std::string& gram) const {
         const size_t k = gram.size();
-        std::vector<uint32_t> result;
+        std::vector<std::pair<uint32_t, uint32_t>> result;
         for (unsigned mask = 0; mask < (1u << k); ++mask) {
             uint32_t forward = 0, reverse = 0;
             for (size_t j = 0; j < k; ++j) {
@@ -49,10 +51,18 @@ private:
                 forward += d * power_[j];
                 reverse += d * power_[k - 1 - j];
             }
-            result.push_back(start_[k] + std::min(forward, reverse));
+            // Keep both possible orientations when the partially specified
+            // pattern is palindromic, even if the complete fragment is not.
+            const uint32_t directions = forward < reverse ? 1u : forward > reverse ? 2u : 3u;
+            result.push_back({start_[k] + std::min(forward, reverse), directions});
         }
         std::sort(result.begin(), result.end());
-        result.erase(std::unique(result.begin(), result.end()), result.end());
+        size_t size = 0;
+        for (const auto& item : result) {
+            if (size && result[size - 1].first == item.first) result[size - 1].second |= item.second;
+            else result[size++] = item;
+        }
+        result.resize(size);
         return result;
     }
     void make_paths(int cols) {
@@ -60,6 +70,8 @@ private:
         for (int i = 0; i < cells_; ++i) for (int j = 0; j < cells_; ++j)
             if (i != j && std::abs(i / cols - j / cols) <= 1 && std::abs(i % cols - j % cols) <= 1)
                 adjacent[i] = uint16_t(adjacent[i] | (1u << j));
+        for (int i = 0; i < cells_; ++i)
+            degree_[i] = static_cast<uint8_t>(__builtin_popcount(adjacent[i]));
         Path path;
         const auto walk = [&](auto&& self, int cell, uint16_t used) -> void {
             // Reversal has the same set of possible canonical substrings.
@@ -130,7 +142,7 @@ public:
                     const uint32_t id = static_cast<uint32_t>(strings.size());
                     found = ids.emplace(gram, id).first;
                     strings.push_back(gram);
-                    for (uint32_t p : patterns(gram)) ++offsets_[p + 1];
+                    for (const auto& p : patterns(gram)) ++offsets_[p.first + 1];
                 }
                 requirements_.push_back(found->second);
             }
@@ -145,8 +157,14 @@ public:
         matches_.resize(static_cast<size_t>(postings));
         // Fill backwards, temporarily turning ends into starts. Restore offsets
         // afterwards without allocating another ~57 MiB cursor array.
-        for (size_t id = 0; id < strings.size(); ++id)
-            for (uint32_t p : patterns(strings[id])) matches_[--offsets_[p + 1]] = static_cast<uint32_t>(id);
+        if (strings.size() >= (uint64_t{1} << 30)) throw std::runtime_error("Too many distinct fragments");
+        symbols_.resize(strings.size());
+        for (size_t id = 0; id < strings.size(); ++id) {
+            for (size_t j = 0; j < strings[id].size(); ++j)
+                symbols_[id][j] = static_cast<uint8_t>(strings[id][j] - 'a');
+            for (const auto& p : patterns(strings[id]))
+                matches_[--offsets_[p.first + 1]] = (static_cast<uint32_t>(id) << 2) | p.second;
+        }
         for (size_t i = 0; i + 1 < offsets_.size(); ++i) offsets_[i] = offsets_[i + 1];
         offsets_.back() = static_cast<uint32_t>(postings);
         gram_count_ = strings.size();
@@ -171,7 +189,8 @@ public:
     }
 
     Workspace workspace() const {
-        return {std::vector<uint32_t>(gram_count_), std::vector<uint32_t>(hash_size_), 0};
+        return {std::vector<uint32_t>(gram_count_), std::vector<uint32_t>(hash_size_),
+                std::vector<uint32_t>(gram_count_), 0};
     }
 
     uint64_t bound(const std::string& pattern, Workspace& work) const {
@@ -208,7 +227,7 @@ public:
             const uint32_t p = start_[path.length] + std::min(forward, reverse);
             if (!first_pattern(p, work)) continue;
             for (uint32_t i = offsets_[p]; i < offsets_[p + 1]; ++i) {
-                const uint32_t id = matches_[i];
+                const uint32_t id = matches_[i] >> 2;
                 if (work.possible[id] != work.generation) { work.possible[id] = work.generation; ++found; }
             }
             if (found == gram_count_) break;
@@ -229,6 +248,114 @@ public:
         }
         return value;
     }
+    // Stable geometric priority: independent of window length and letter values.
+    // This preserves restriction/window monotonicity when the chosen cell changes.
+    int choose_cell(const std::string& pattern) const {
+        if (static_cast<int>(pattern.size()) != cells_) throw std::runtime_error("Incorrect partial-board length");
+        int chosen = -1;
+        for (int i = 0; i < cells_; ++i)
+            if (pattern[i] == '.' && (chosen < 0 || degree_[i] > degree_[chosen])) chosen = i;
+        return chosen;
+    }
+
+    // Compute the raw fragment bounds for all 26 assignments at one cell in a
+    // SINGLE path/word pass. Each fragment carries a 26-bit letter-support mask.
+    // OR over occurrences, AND over a word's requirements, then add the word's
+    // score once to each supported letter. This is not 26 separate searches.
+    std::array<uint64_t, 26> letter_bounds(const std::string& pattern, int cell, Workspace& work) const {
+        if (static_cast<int>(pattern.size()) != cells_) throw std::runtime_error("Incorrect partial-board length");
+        if (cell < 0 || cell >= cells_ || pattern[cell] != '.')
+            throw std::runtime_error("Forced cell must be an unfilled cell of the board");
+        if (work.possible.size() != gram_count_ || work.seen_keys.size() != hash_size_ ||
+            work.support.size() != gram_count_) throw std::runtime_error("Workspace does not match pattern tables");
+        constexpr uint32_t all = (1u << 26) - 1;
+        std::array<int, 16> board{};
+        std::array<uint8_t, 26> supply{};
+        unsigned blank_mask = 0;
+        int blanks = 0;
+        for (int i = 0; i < cells_; ++i) {
+            const char c = pattern[i];
+            if (c == '.') { board[i] = base_ - 1; blank_mask |= 1u << i; ++blanks; }
+            else {
+                if (c < 'a' || c > 'z') throw std::runtime_error("Use lowercase a-z or '.' for unset cells");
+                board[i] = digits_[c - 'a']; ++supply[c - 'a'];
+            }
+        }
+        // An entirely wildcard window AVOIDING the forced cell supports every
+        // fragment at every choice of that cell, so only inventory can help.
+        const bool all_possible = universal_[blank_mask & ~(1u << cell)] != 0;
+        if (++work.generation == 0) { std::fill(work.possible.begin(), work.possible.end(), 0); ++work.generation; }
+        std::fill(work.seen_keys.begin(), work.seen_keys.end(), std::numeric_limits<uint32_t>::max());
+        if (!all_possible) for (const auto& path : paths_) {
+            uint32_t forward = 0, reverse = 0;
+            int position = -1;
+            bool valid = true;
+            for (unsigned j = 0; j < path.length; ++j) {
+                if (path.cells[j] == cell) position = static_cast<int>(j);
+                const int d = board[path.cells[j]];
+                if (d < 0) { valid = false; break; }
+                forward += static_cast<uint32_t>(d) * power_[j];
+                reverse += static_cast<uint32_t>(d) * power_[path.length - 1 - j];
+            }
+            if (!valid) continue;
+            if (position >= 0 && reverse < forward) position = path.length - 1 - position;
+            const uint32_t p = start_[path.length] + std::min(forward, reverse);
+            // Canonical position matters: the same wildcard pattern can put
+            // this board cell at different positions in different occurrences.
+            const uint32_t hash_key = p * 7 + static_cast<uint32_t>(position + 1);
+            if (!first_pattern(hash_key, work)) continue;
+            for (uint32_t i = offsets_[p]; i < offsets_[p + 1]; ++i) {
+                const uint32_t posting = matches_[i], id = posting >> 2;
+                if (work.possible[id] != work.generation) {
+                    work.possible[id] = work.generation; work.support[id] = 0;
+                }
+                if (work.support[id] == all) continue;
+                if (position < 0) work.support[id] = all;
+                else {
+                    if (posting & 1u) work.support[id] |= 1u << symbols_[id][position];
+                    if (posting & 2u) work.support[id] |= 1u << symbols_[id][path.length - 1 - position];
+                }
+            }
+        }
+        std::array<uint64_t, 26> result{};
+        uint64_t common = 0;
+        for (const auto& word : words_) {
+            uint32_t supported = all;
+            if (!all_possible) for (uint32_t i = word.first; i < word.first + word.count; ++i) {
+                const uint32_t id = requirements_[i];
+                supported &= work.possible[id] == work.generation ? work.support[id] : 0;
+                if (!supported) break;
+            }
+            if (!supported) continue;
+            int missing = 0;
+            uint32_t deficit_letters = 0;
+            for (uint32_t i = word.inventory_first; i < word.inventory_first + word.inventory_count; ++i) {
+                const auto& count = inventories_[i];
+                const int deficit = int(count.second) - supply[count.first];
+                if (deficit > 0) { missing += deficit; deficit_letters |= 1u << count.first; }
+                if (missing > blanks) break;
+            }
+            if (missing > blanks) continue;
+            // Fixing the cell consumes one blank. A deficit of exactly 'blanks'
+            // can fit afterwards only if the chosen letter removes a deficit.
+            if (missing == blanks) supported &= deficit_letters;
+            if (supported == all) { common += word.points; continue; }
+            while (supported) {
+                const unsigned a = static_cast<unsigned>(__builtin_ctz(supported));
+                result[a] += word.points; supported &= supported - 1;
+            }
+        }
+        for (auto& value : result) value += common;
+        return result;
+    }
+
+    uint64_t forced_bound(const std::string& pattern, Workspace& work, int cell = -1) const {
+        if (cell < 0) cell = choose_cell(pattern);
+        if (cell < 0) return bound(pattern, work);
+        const auto values = letter_bounds(pattern, cell, work);
+        return *std::max_element(values.begin(), values.end());
+    }
+
     size_t table_bytes() const { return (offsets_.size() + matches_.size()) * sizeof(uint32_t); }
     size_t paths() const { return paths_.size(); }
     size_t grams() const { return gram_count_; }

@@ -210,6 +210,8 @@ void usage() {
               << "  --method inventory|patterns  Bound method (default inventory)\n"
               << "  --window N             Fragment length 2..6 (default 5)\n"
               << "  --table-mib N          Index + postings budget (default 2048 MiB)\n"
+              << "  --force                Synchronize one unfilled cell across all words\n"
+              << "  --force-cell N         Synchronize this zero-based cell instead\n"
               << "  --stdin                Also read boards from standard input\n"
               << "  --repeat N             Benchmark repetitions (default 1 for bench-bound)\n"
               << "  --threshold N          Incumbent score for pruning counts (default 3625)\n"
@@ -227,17 +229,20 @@ void usage() {
     int rows = 4, cols = 4, window = 5;
     uint64_t table_mib = 2048, repeat = command == "bench" ? 10000 : 1, threshold = 3625;
     std::string method = "inventory";
-    bool use_stdin = false;
+    bool use_stdin = false, force = false;
+    int force_cell = -1;
     std::vector<std::string> boards;
     for (int i = 3; i < argc; ++i) {
         const std::string option = argv[i];
+        if (option == "--force") { force = true; continue; }
         if (option == "--stdin") { use_stdin = true; continue; }
         if (option == "--method" || option == "--rows" || option == "--cols" || option == "--window" ||
-            option == "--table-mib" || option == "--repeat" || option == "--threshold") {
+            option == "--force-cell" || option == "--table-mib" || option == "--repeat" || option == "--threshold") {
             if (++i >= argc) throw std::runtime_error("Missing value for " + option);
             const std::string value = argv[i];
             if (option == "--method") { method = value; continue; }
-            if (option == "--rows") rows = static_cast<int>(number(value, option, 25));
+            if (option == "--force-cell") { force_cell = static_cast<int>(number(value, option, 15)); force = true; }
+            else if (option == "--rows") rows = static_cast<int>(number(value, option, 25));
             else if (option == "--cols") cols = static_cast<int>(number(value, option, 25));
             else if (option == "--window") window = static_cast<int>(number(value, option, 6));
             else if (option == "--repeat") repeat = number(value, option, 1000000);
@@ -257,6 +262,8 @@ void usage() {
     if (rows < 2 || cols < 2 || rows * cols > 25) throw std::runtime_error("Invalid grid dimensions");
     if (window < 2 || !table_mib || !repeat) throw std::runtime_error("Window, table budget or repeat is out of range");
     if (method != "inventory" && method != "patterns") throw std::runtime_error("Unknown bound method");
+    if (force && (method != "patterns" || (command != "bound" && command != "bench-bound")))
+        throw std::runtime_error("Forcing requires --method patterns with bound or bench-bound");
     const bool bounding = command == "bound" || command == "bench-bound";
     Dictionary dict(argv[2]);
     Scorer scorer(dict, rows, cols);
@@ -271,8 +278,11 @@ void usage() {
         setup_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
     const auto evaluate = [&](const std::string& board) {
+        if (force_cell >= 0 && (force_cell >= static_cast<int>(board.size()) || board[force_cell] != '.'))
+            throw std::runtime_error("Forced cell must be an unfilled cell of the board");
         if (!bounding || board.find('.') == std::string::npos) return scorer.score(board);
-        return patterns ? patterns->bound(board, work) : scorer.inventory_bound(board);
+        if (!patterns) return scorer.inventory_bound(board);
+        return force ? patterns->forced_bound(board, work, force_cell) : patterns->bound(board, work);
     };
     if (command == "bench" || command == "bench-bound") {
         const auto start = std::chrono::steady_clock::now();
@@ -287,7 +297,7 @@ void usage() {
                   << ",\"seconds\":" << seconds << ",\"setup_seconds\":" << setup_seconds
                   << ",\"checksum\":" << checksum << ",\"pruned\":" << pruned
                   << ",\"threshold\":" << threshold << ",\"method\":\"" << (bounding ? method : "score")
-                  << "\",\"window\":" << window << ",\"table_bytes\":" << (patterns ? patterns->table_bytes() : 0)
+                  << "\",\"force\":" << (force ? "true" : "false") << ",\"window\":" << window << ",\"table_bytes\":" << (patterns ? patterns->table_bytes() : 0)
                   << ",\"workspace_bytes\":" << work.bytes() << "}\n";
         return 0;
     }

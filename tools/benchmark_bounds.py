@@ -56,10 +56,13 @@ def main():
         report['cpu'] = next((line.split(':', 1)[1].strip() for line in cpuinfo.read_text().splitlines()
                               if line.startswith('model name')), 'unknown')
     baseline = None
-    previous = None
-    for window in [None, *sorted(set(args.windows))]:
+    previous = {}
+    raw_bounds = {}
+    for window, force in [(None, False), *[(w, f) for w in sorted(set(args.windows)) for f in (False, True)]]:
         method = 'inventory' if window is None else 'patterns'
         options = ['--method', method, '--stdin'] + ([] if window is None else ['--window', str(window)])
+        if force:
+            options.append('--force')
         bound_run = subprocess.run([binary, 'bound', str(args.dictionary), *options], input=stdin,
                                    text=True, capture_output=True, check=True)
         values = [int(line.rsplit(' ', 1)[1]) for line in bound_run.stdout.splitlines()]
@@ -67,9 +70,13 @@ def main():
         if baseline is None:
             baseline = values
         assert all(a <= b for a, b in zip(values, baseline))
-        if previous is not None:
-            assert all(a <= b for a, b in zip(values, previous))
-        previous = values
+        if force in previous:
+            assert all(a <= b for a, b in zip(values, previous[force]))
+        previous[force] = values
+        if force:
+            assert all(a <= b for a, b in zip(values, raw_bounds[window]))
+        else:
+            raw_bounds[window] = values
         assert all(value >= incumbent_score for row, value in zip(corpus, values) if row['family'] == 'incumbent')
         bench = subprocess.run([binary, 'bench-bound', str(args.dictionary), *options,
                                 '--repeat', str(args.repeats), '--threshold', str(args.threshold)],
@@ -83,7 +90,7 @@ def main():
                 groups.append({'family': family, 'fixed': fixed, 'samples': len(selected),
                                'median_bound': statistics.median(selected),
                                'pruned': sum(v <= args.threshold for v in selected)})
-        variant = {'name': method if window is None else f'patterns-{window}', 'timing': timing, 'groups': groups, 'bounds': values}
+        variant = {'name': method if window is None else f'patterns-{window}' + ('-forced' if force else ''), 'timing': timing, 'groups': groups, 'bounds': values}
         report['variants'].append(variant)
         print(json.dumps({k: v for k, v in variant.items() if k != 'bounds'}), flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)

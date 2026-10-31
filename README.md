@@ -6,7 +6,7 @@ Independent, high-performance algorithms and certified exhaustive search for hig
 
 Construct a **substantially faster, independently verifiable** proof of the optimal 4×4 Boggle board using the ENABLE2K dictionary. Dan Vanderkam established that `perslatgsineters` scores **3,625** and is globally optimal. We seek a new proof algorithm, not another claim to have discovered this board. A later goal is to extend the approach to unresolved word lists and 5×5 boards.
 
-**Current status:** an exact scorer, the inventory baseline, and a tested **compiled fragment-table upper bound**. The new bound checks every short fragment of a word, counts each word once, and is no weaker than the inventory baseline. This is a screening stage, **not yet a global optimality proof or a demonstrated speedup over Vanderkam's prover**.
+**Current status:** an exact scorer, the inventory baseline, and a tested **compiled fragment-table upper bound**, with optional shared-cell synchronization. The new bound checks every short fragment of a word, counts each word once, and is no weaker than the inventory baseline. This is a screening stage, **not yet a global optimality proof or a demonstrated speedup over Vanderkam's prover**.
 
 ## Build
 
@@ -36,6 +36,9 @@ each worker needs only its own scratch workspace.
 python3 tools/fetch_enable2k.py
 python3 tools/benchmark_bounds.py data/enable2k.txt --windows 4 5 6 --expect-score 3625
 ```
+
+Add `--force` to synchronize one unfilled cell across every word in a single
+26-way mask computation; see [the stronger bound](docs/synchronized-bound.md).
 
 See [bound construction and proof](docs/pattern-bound.md) and
 [benchmark methodology](benchmarks/README.md). The default method remains

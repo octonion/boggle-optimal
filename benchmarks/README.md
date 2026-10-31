@@ -37,3 +37,8 @@ and query time together when assessing a short-lived use case.
 These are pruning microbenchmarks, not measurements of a full proof search and
 not a comparison against Vanderkam's complete prover. GitHub Actions runs the
 same pinned-dictionary benchmark and publishes its complete JSON as an artifact.
+
+The benchmark also runs each window with `--force`, which synchronizes one
+unfilled cell across all words. These variants use the same corpus and table
+index, but perform extra support-mask work; compare their query costs as well as
+pruning. See [the simultaneous 26-way algorithm](../docs/synchronized-bound.md).
