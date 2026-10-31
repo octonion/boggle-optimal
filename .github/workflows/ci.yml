@@ -2,10 +2,30 @@ name: C++ correctness
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        flags:
+          - '-O3 -std=c++17 -Wall -Wextra -Wpedantic -Werror'
+          - '-O1 -g -std=c++17 -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer'
     steps:
       - uses: actions/checkout@v4
-      - name: Build and test
-        run: make test
+      - name: Build and exhaustive tests
+        run: make test CXXFLAGS='${{ matrix.flags }}'
+  enable2k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make
+      - name: Pinned dictionary and reproducible pruning benchmark
+        run: |
+          python3 tools/fetch_enable2k.py
+          python3 tools/benchmark_bounds.py data/enable2k.txt --samples 32 --windows 4 5 6 --repeats 2 --expect-score 3625
+      - uses: actions/upload-artifact@v4
+        with:
+          name: enable2k-bounds-${{ github.run_id }}
+          path: results/bounds.json

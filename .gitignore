@@ -1,3 +1,6 @@
-/boggle-optimal
-*.o
+boggle-optimal
+tests/test-workspace
 __pycache__/
+*.csv
+/data/
+/results/
