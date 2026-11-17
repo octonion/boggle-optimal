@@ -111,7 +111,7 @@ struct Dictionary {
 
 class Scorer {
     const Dictionary& dict_;
-    int rows_, cols_, size_;
+    int size_;
     std::vector<uint32_t> neighbors_;
     std::vector<uint32_t> seen_;
     uint32_t generation_ = 0;
@@ -139,7 +139,7 @@ class Scorer {
 
 public:
     Scorer(const Dictionary& dict, int rows, int cols)
-        : dict_(dict), rows_(rows), cols_(cols), size_(grid_size(rows, cols)),
+        : dict_(dict), size_(grid_size(rows, cols)),
           neighbors_(static_cast<size_t>(size_)), seen_(dict.entries.size(), 0) {
         if (rows < 2 || cols < 2 || size_ > 25)
             throw std::runtime_error("Grid must have at least 2 rows and columns, at most 25 cells");

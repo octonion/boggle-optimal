@@ -160,8 +160,10 @@ public:
         if (strings.size() >= (uint64_t{1} << 30)) throw std::runtime_error("Too many distinct fragments");
         symbols_.resize(strings.size());
         for (size_t id = 0; id < strings.size(); ++id) {
+            // grams() limits fragments to length <= 6; keep the write checked
+            // even if that invariant changes.
             for (size_t j = 0; j < strings[id].size(); ++j)
-                symbols_[id][j] = static_cast<uint8_t>(strings[id][j] - 'a');
+                symbols_[id].at(j) = static_cast<uint8_t>(strings[id][j] - 'a');
             for (const auto& p : patterns(strings[id]))
                 matches_[--offsets_[p.first + 1]] = (static_cast<uint32_t>(id) << 2) | p.second;
         }
